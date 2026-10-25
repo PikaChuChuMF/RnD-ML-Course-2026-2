@@ -180,7 +180,7 @@ Baseline должен быть **достаточно простым**, чтоб
 
 Baseline должен быть **простым, корректным и воспроизводимым**.
 
-### Хороший baseline
+### Хороший baseline (с примерами)
 - **Содержит EDA-блок (хотя бы короткий)**
 - **Табличные данные:** Logistic/Linear Regression, Ridge/Lasso, CatBoost/LightGBM с простыми настройками.
 - **Тексты:** TF-IDF + Logistic Regression / Linear SVM / Ridge; простой transformer baseline, если он честно воспроизводим.
