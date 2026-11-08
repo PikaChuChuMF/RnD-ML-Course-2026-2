@@ -1,10 +1,13 @@
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 
 KEY = ["Store", "Date"]
 INPUT_COLUMNS = KEY + ["DayOfWeek", "Sales", "Open", "Promo", "StateHoliday"]
+HISTORY_WEEKS = 8
+TREND_EMA_SPAN = 3
 HISTORY_COLUMNS = [
     "store_median",
     "weekday_median",
@@ -12,6 +15,9 @@ HISTORY_COLUMNS = [
     "trend",
     "last_year",
     "promo_median",
+    "sales_28_days_before_cutoff",
+    "recent_std",
+    "recent_weekday_median",
 ]
 
 
@@ -23,6 +29,13 @@ def load_sales(path: Path) -> pd.DataFrame:
         raise ValueError("Sales cannot be negative.")
     sales["Month"] = sales["Date"].dt.month
     return sales.sort_values("Date").reset_index(drop=True)
+
+
+def smoothed_weekly_slope(weekly_sales: pd.Series) -> float:
+    if len(weekly_sales) < 2:
+        return 0.0
+    smoothed = weekly_sales.ewm(span=TREND_EMA_SPAN, adjust=False).mean()
+    return float(np.polyfit(weekly_sales.index, smoothed, 1)[0])
 
 
 def add_history(
@@ -46,12 +59,26 @@ def add_history(
     result["weekday_mean"] = result["weekday_mean"].fillna(result["store_median"])
 
     recent_start = cutoff - pd.Timedelta(days=recent_days)
-    previous_start = recent_start - pd.Timedelta(days=recent_days)
     recent = positive.loc[positive["Date"] >= recent_start].groupby("Store")["Sales"].mean()
-    previous = positive.loc[positive["Date"].between(previous_start, recent_start, inclusive="left")]
-    previous_mean = previous.groupby("Store")["Sales"].mean()
     result["recent_mean"] = rows["Store"].map(recent).fillna(result["store_median"])
-    result["trend"] = rows["Store"].map(recent - previous_mean).fillna(0)
+
+    eight_weeks_start = cutoff - pd.Timedelta(weeks=HISTORY_WEEKS)
+    eight_weeks = positive.loc[positive["Date"] >= eight_weeks_start].copy()
+    eight_weeks["week"] = (eight_weeks["Date"] - eight_weeks_start).dt.days // 7
+    weekly_means = eight_weeks.groupby(["Store", "week"])["Sales"].mean()
+    slopes = weekly_means.groupby(level="Store").apply(
+        lambda sales: smoothed_weekly_slope(sales.droplevel("Store"))
+    )
+    result["trend"] = rows["Store"].map(slopes).fillna(0)
+
+    cutoff_lag = cutoff - pd.Timedelta(days=28)
+    cutoff_lag_sales = history.loc[history["Date"].eq(cutoff_lag)].set_index("Store")["Sales"]
+    result["sales_28_days_before_cutoff"] = rows["Store"].map(cutoff_lag_sales).fillna(result["store_median"])
+    recent_std = eight_weeks.groupby("Store")["Sales"].std()
+    result["recent_std"] = rows["Store"].map(recent_std).fillna(0)
+    recent_weekday = eight_weeks.groupby(["Store", "DayOfWeek"])["Sales"].median()
+    result["recent_weekday_median"] = recent_weekday.reindex(weekday_keys).to_numpy()
+    result["recent_weekday_median"] = result["recent_weekday_median"].fillna(result["weekday_median"])
 
     last_year_dates = rows["Date"] - pd.Timedelta(days=year_lag_days)
     last_year_keys = pd.MultiIndex.from_arrays([rows["Store"], last_year_dates], names=KEY)
@@ -74,7 +101,8 @@ def prepare_windows(sales: pd.DataFrame, config: dict):
 
     window = pd.Timedelta(days=window_days)
     cutoff = sales["Date"].max() + pd.Timedelta(days=1) - window
-    first_training_cutoff = sales["Date"].min() + pd.Timedelta(days=2 * recent_days)
+    history_days = max(7 * HISTORY_WEEKS, recent_days)
+    first_training_cutoff = sales["Date"].min() + pd.Timedelta(days=history_days)
     origins = pd.date_range(start=cutoff, end=first_training_cutoff, freq=-window)
     origins = origins[origins < cutoff].sort_values()
     if origins.empty:

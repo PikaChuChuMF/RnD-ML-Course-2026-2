@@ -6,7 +6,7 @@
   "recent_days": 28,
   "year_lag_days": 364,
   "min_relative_improvement": 0.05,
-  "l2_alpha": 100.0,
+  "l2_alphas": [0.1, 1.0, 10.0, 100.0],
   "validation_windows": 3,
   "bootstrap_samples": 1000,
   "seed": 42

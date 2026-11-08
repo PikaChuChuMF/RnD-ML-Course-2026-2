@@ -15,8 +15,8 @@ def run(config):
     print(f"Loaded {len(sales):,} rows", flush=True)
     train, validation, cutoff, origins = prepare_windows(sales, config)
     window_count = config["validation_windows"]
-    if not 1 <= window_count <= len(origins):
-        raise ValueError("The backtest must leave at least one earlier training window.")
+    if not 2 <= window_count <= len(origins):
+        raise ValueError("Use at least two validation windows and leave an earlier training window.")
 
     models, predictions, scores = {}, {}, {}
     for name, columns in EXPERIMENTS.items():
@@ -25,17 +25,13 @@ def run(config):
         predictions[name] = predict(models[name], validation)
         scores[name] = metrics(validation, predictions[name])
 
-    alpha = config["l2_alpha"]
-    regularized = {"alpha": alpha}
-    for name in ("no_history", "with_history"):
-        print(f"Fitting L2 {name} for {cutoff.date()}", flush=True)
-        model = fit_model(train, EXPERIMENTS[name], alpha=alpha)
-        predictions[f"l2_{name}"] = predict(model, validation)
-        regularized[name] = metrics(validation, predictions[f"l2_{name}"])
-
     windows = []
     window = pd.Timedelta(days=config["window_days"])
-    earlier_origins = origins[-(window_count - 1):] if window_count > 1 else []
+    earlier_origins = origins[-(window_count - 1):]
+    alphas = config["l2_alphas"]
+    if not alphas or any(alpha <= 0 for alpha in alphas):
+        raise ValueError("Provide positive L2 candidates in l2_alphas.")
+    tuning_scores = {alpha: [] for alpha in alphas}
     for start in earlier_origins:
         print(f"Backtest starting {start.date()}", flush=True)
         earlier_train = train.loc[train["Date"] < start]
@@ -44,7 +40,25 @@ def run(config):
         for name in ("no_history", "with_history"):
             model = fit_model(earlier_train, EXPERIMENTS[name])
             record[name] = metrics(earlier_validation, predict(model, earlier_validation))["rmspe"]
+        for alpha in tuning_scores:
+            model = fit_model(earlier_train, EXPERIMENTS["with_history"], alpha=alpha)
+            score = metrics(earlier_validation, predict(model, earlier_validation))["rmspe"]
+            tuning_scores[alpha].append(score)
         windows.append(record)
+
+    tuning_means = {alpha: float(np.mean(values)) for alpha, values in tuning_scores.items()}
+    best_alpha = min(tuning_means, key=tuning_means.get)
+    regularized = {
+        "alpha": best_alpha,
+        "selection_rmspe": tuning_means[best_alpha],
+        "tuning_rmspe": tuning_means,
+    }
+    for name in ("no_history", "with_history"):
+        print(f"Fitting L2 {name} with alpha={best_alpha:g} for {cutoff.date()}", flush=True)
+        model = fit_model(train, EXPERIMENTS[name], alpha=best_alpha)
+        predictions[f"l2_{name}"] = predict(model, validation)
+        regularized[name] = metrics(validation, predictions[f"l2_{name}"])
+
     windows.append({
         "start": str(cutoff.date()),
         "end": str(validation["Date"].max().date()),
