@@ -54,7 +54,7 @@ def historical_spikes(past):
     return positive.loc[positive["spike"] & positive["Store"].isin(stores)]
 
 
-def bootstrap_by_store(rows, reference, candidate, samples, seed):
+def bootstrap_rmspe_by_store(rows, reference, candidate, samples, seed):
     scored = rows["Sales"] > 0
     actual = rows.loc[scored, "Sales"].to_numpy()
     errors = pd.DataFrame({
@@ -65,11 +65,38 @@ def bootstrap_by_store(rows, reference, candidate, samples, seed):
     })
     groups = errors.groupby("store")[["reference", "candidate", "rows"]].sum().to_numpy()
     rng = np.random.default_rng(seed)
-    improvements = []
-    for _ in range(samples):
+    rmspe_samples = np.empty((samples, 2))
+    for index in range(samples):
         drawn = rng.integers(len(groups), size=len(groups))
         reference_error, candidate_error, count = groups[drawn].sum(axis=0)
-        reference_rmspe, candidate_rmspe = np.sqrt([reference_error / count, candidate_error / count])
-        improvements.append(relative_improvement(reference_rmspe, candidate_rmspe))
-    valid = [value for value in improvements if value is not None]
-    return np.quantile(valid, [0.025, 0.975]).tolist() if valid else None
+        rmspe_samples[index] = np.sqrt([reference_error / count, candidate_error / count])
+    return rmspe_samples
+
+
+def bootstrap_by_store(rows, reference, candidate, samples, seed):
+    rmspe_samples = bootstrap_rmspe_by_store(rows, reference, candidate, samples, seed)
+    reference_rmspe, candidate_rmspe = rmspe_samples[rmspe_samples[:, 0] > 0].T
+    valid = (reference_rmspe - candidate_rmspe) / reference_rmspe
+    return np.quantile(valid, [0.025, 0.975]).tolist() if valid.size else None
+
+
+def compare_rmspe_by_store(rows, predictions, comparisons, samples, seed):
+    tail = 0.05 / (2 * len(comparisons))
+    results = {}
+    for name, mask, reference, candidate in comparisons:
+        subset = rows.loc[mask]
+        stores = subset.loc[subset["Sales"] > 0, "Store"].nunique()
+        if stores < 2:
+            continue
+        before = predictions[reference][mask]
+        after = predictions[candidate][mask]
+        estimates = bootstrap_rmspe_by_store(subset, before, after, samples, seed)
+        differences = estimates[:, 1] - estimates[:, 0]
+        low, high = np.quantile(differences, [tail, 1 - tail])
+        results[name] = {
+            "stores": int(stores),
+            "delta_rmspe": metrics(subset, after)["rmspe"] - metrics(subset, before)["rmspe"],
+            "interval": [float(low), float(high)],
+            "excludes_zero": bool(high < 0 or low > 0),
+        }
+    return {"samples": samples, "family_size": len(comparisons), "comparisons": results}

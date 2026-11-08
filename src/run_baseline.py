@@ -6,7 +6,14 @@ import numpy as np
 import pandas as pd
 
 from src.data import add_history, load_sales, prepare_windows
-from src.evaluate import bootstrap_by_store, historical_spikes, metrics, relative_improvement, summarize_data
+from src.evaluate import (
+    bootstrap_by_store,
+    compare_rmspe_by_store,
+    historical_spikes,
+    metrics,
+    relative_improvement,
+    summarize_data,
+)
 from src.train import EXPERIMENTS, fit_model, predict
 
 
@@ -78,12 +85,14 @@ def run(config):
     spiky_stores = spikes["Store"].unique()
     last_year = validation["last_year_available"].to_numpy()
     spiky = validation["Store"].isin(spiky_stores).to_numpy()
-    checks = {}
-    for label, mask, reference, candidate in [
-        ("trend", np.ones(len(validation), dtype=bool), "without_trend", "with_history"),
+    all_rows = np.ones(len(validation), dtype=bool)
+    research_pairs = [
+        ("trend", all_rows, "without_trend", "with_history"),
         ("last_year", last_year, "without_last_year", "with_history"),
         ("spikes", spiky, "with_weekday_mean", "with_history"),
-    ]:
+    ]
+    checks = {}
+    for label, mask, reference, candidate in research_pairs:
         if (validation.loc[mask, "Sales"] > 0).any():
             checks[label] = {
                 reference: metrics(validation.loc[mask], predictions[reference][mask]),
@@ -110,6 +119,17 @@ def run(config):
             "median_absolute_change": float(np.median(change)),
             "p90_absolute_change": float(np.quantile(change, 0.9)),
         }
+
+    comparison_pairs = [
+        ("l2_no_history", all_rows, "no_history", "l2_no_history"),
+        ("l2_with_history", all_rows, "with_history", "l2_with_history"),
+        *research_pairs,
+        ("remove_spikes", spiky, "with_history", "history_without_spikes"),
+    ]
+    comparison_uncertainty = compare_rmspe_by_store(
+        validation, {**predictions, "history_without_spikes": without_spikes}, comparison_pairs,
+        config.get("comparison_bootstrap_samples", 10000), config["seed"],
+    )
 
     test = pd.read_csv(config["test_path"], usecols=["Store", "Date", "Open"], parse_dates=["Date"])
     test_stores = validation["Store"].isin(test["Store"]).to_numpy()
@@ -143,6 +163,7 @@ def run(config):
         "spiky_stores": len(spiky_stores),
         "spike_sensitivity": spike_sensitivity,
         "regularization": regularized,
+        "comparison_uncertainty": comparison_uncertainty,
         "official_test": test_scope,
     }
 
