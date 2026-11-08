@@ -107,6 +107,8 @@ def run(config):
         clean_features = add_history(
             affected, clean_past, cutoff, config["recent_days"], config["year_lag_days"],
         )
+        removed_last_year = affected["last_year_available"] & ~clean_features["last_year_available"]
+        clean_features.loc[removed_last_year, "last_year"] = clean_features.loc[removed_last_year, "weekday_mean"]
         original = predictions["with_history"][spiky]
         filtered = predict(models["with_history"], clean_features)
         without_spikes[spiky] = filtered
@@ -114,6 +116,7 @@ def run(config):
         change = np.abs(filtered[positive] - original[positive])
         spike_sensitivity = {
             "removed_rows": len(spikes),
+            "replaced_last_year_scored_rows": int((removed_last_year & affected["Sales"].gt(0)).sum()),
             "original": metrics(affected, original),
             "without_spikes": metrics(affected, filtered),
             "median_absolute_change": float(np.median(change)),
