@@ -80,8 +80,9 @@ def bootstrap_by_store(rows, reference, candidate, samples, seed):
     return np.quantile(valid, [0.025, 0.975]).tolist() if valid.size else None
 
 
-def compare_rmspe_by_store(rows, predictions, comparisons, samples, seed):
-    tail = 0.05 / (2 * len(comparisons))
+def compare_rmspe_by_store(rows, predictions, comparisons, samples, seed, family_size=None):
+    family_size = len(comparisons) if family_size is None else family_size
+    tail = 0.05 / (2 * family_size)
     results = {}
     for name, mask, reference, candidate in comparisons:
         subset = rows.loc[mask]
@@ -99,4 +100,4 @@ def compare_rmspe_by_store(rows, predictions, comparisons, samples, seed):
             "interval": [float(low), float(high)],
             "excludes_zero": bool(high < 0 or low > 0),
         }
-    return {"samples": samples, "family_size": len(comparisons), "comparisons": results}
+    return {"samples": samples, "family_size": family_size, "comparisons": results}

@@ -26,7 +26,8 @@ def fit_model(train, history_columns, alpha=0.0):
         ],
         sparse_threshold=1.0,
     )
-    regression = Ridge(alpha=alpha, solver="lsqr") if alpha else LinearRegression()
+    tolerance = 1e-6
+    regression = Ridge(alpha=alpha, solver="lsqr", tol=tolerance) if alpha else LinearRegression(tol=tolerance)
     model = TransformedTargetRegressor(
         regressor=make_pipeline(prepare, regression),
         func=np.log1p,

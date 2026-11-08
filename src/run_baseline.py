@@ -21,9 +21,6 @@ def run(config):
     sales = load_sales(Path(config["data_path"]))
     print(f"Loaded {len(sales):,} rows", flush=True)
     train, validation, cutoff, origins = prepare_windows(sales, config)
-    window_count = config["validation_windows"]
-    if not 2 <= window_count <= len(origins):
-        raise ValueError("Use at least two validation windows and leave an earlier training window.")
 
     models, predictions, scores = {}, {}, {}
     for name, columns in EXPERIMENTS.items():
@@ -32,52 +29,27 @@ def run(config):
         predictions[name] = predict(models[name], validation)
         scores[name] = metrics(validation, predictions[name])
 
-    windows = []
-    window = pd.Timedelta(days=config["window_days"])
-    earlier_origins = origins[-(window_count - 1):]
     alphas = config["l2_alphas"]
     if not alphas or any(alpha <= 0 for alpha in alphas):
         raise ValueError("Provide positive L2 candidates in l2_alphas.")
-    tuning_scores = {alpha: [] for alpha in alphas}
-    for start in earlier_origins:
-        print(f"Backtest starting {start.date()}", flush=True)
-        earlier_train = train.loc[train["Date"] < start]
-        earlier_validation = train.loc[train["Date"].between(start, start + window, inclusive="left")]
-        record = {"start": str(start.date()), "end": str((start + window - pd.Timedelta(days=1)).date())}
-        for name in ("no_history", "with_history"):
-            model = fit_model(earlier_train, EXPERIMENTS[name])
-            record[name] = metrics(earlier_validation, predict(model, earlier_validation))["rmspe"]
-        for alpha in tuning_scores:
-            model = fit_model(earlier_train, EXPERIMENTS["with_history"], alpha=alpha)
-            score = metrics(earlier_validation, predict(model, earlier_validation))["rmspe"]
-            tuning_scores[alpha].append(score)
-        windows.append(record)
+    candidate_predictions = {}
+    tuning_scores = {}
+    for alpha in alphas:
+        print(f"Fitting L2 with history, alpha={alpha:g}", flush=True)
+        model = fit_model(train, EXPERIMENTS["with_history"], alpha=alpha)
+        candidate_predictions[alpha] = predict(model, validation)
+        tuning_scores[alpha] = metrics(validation, candidate_predictions[alpha])["rmspe"]
 
-    tuning_means = {alpha: float(np.mean(values)) for alpha, values in tuning_scores.items()}
-    best_alpha = min(tuning_means, key=tuning_means.get)
+    best_alpha = min(tuning_scores, key=tuning_scores.get)
+    model = fit_model(train, EXPERIMENTS["no_history"], alpha=best_alpha)
+    predictions["l2_no_history"] = predict(model, validation)
+    predictions["l2_with_history"] = candidate_predictions[best_alpha]
     regularized = {
         "alpha": best_alpha,
-        "selection_rmspe": tuning_means[best_alpha],
-        "tuning_rmspe": tuning_means,
-    }
-    for name in ("no_history", "with_history"):
-        print(f"Fitting L2 {name} with alpha={best_alpha:g} for {cutoff.date()}", flush=True)
-        model = fit_model(train, EXPERIMENTS[name], alpha=best_alpha)
-        predictions[f"l2_{name}"] = predict(model, validation)
-        regularized[name] = metrics(validation, predictions[f"l2_{name}"])
-
-    windows.append({
-        "start": str(cutoff.date()),
-        "end": str(validation["Date"].max().date()),
-        "no_history": scores["no_history"]["rmspe"],
-        "with_history": scores["with_history"]["rmspe"],
-    })
-    window_summary = {
-        name: {
-            "mean": float(np.mean([row[name] for row in windows])),
-            "std": float(np.std([row[name] for row in windows], ddof=1)) if len(windows) > 1 else None,
-        }
-        for name in ("no_history", "with_history")
+        "selection_rmspe": tuning_scores[best_alpha],
+        "tuning_rmspe": tuning_scores,
+        "no_history": metrics(validation, predictions["l2_no_history"]),
+        "with_history": metrics(validation, predictions["l2_with_history"]),
     }
 
     past = sales.loc[sales["Date"] < cutoff]
@@ -132,6 +104,12 @@ def run(config):
     comparison_uncertainty = compare_rmspe_by_store(
         validation, {**predictions, "history_without_spikes": without_spikes}, comparison_pairs,
         config.get("comparison_bootstrap_samples", 10000), config["seed"],
+        family_size=len(comparison_pairs) + 2 * (len(tuning_scores) - 1),
+    )
+    improvement = relative_improvement(scores["no_history"]["rmspe"], scores["with_history"]["rmspe"])
+    improvement_interval = bootstrap_by_store(
+        validation, predictions["no_history"], predictions["with_history"],
+        config["bootstrap_samples"], config["seed"],
     )
 
     test = pd.read_csv(config["test_path"], usecols=["Store", "Date", "Open"], parse_dates=["Date"])
@@ -147,21 +125,20 @@ def run(config):
             for name in ("no_history", "with_history")
         },
     }
-    improvement = relative_improvement(scores["no_history"]["rmspe"], scores["with_history"]["rmspe"])
     report = {
         "data": summarize_data(sales),
         "train": {"first_date": str(origins[0].date()), "rows": int(train["Sales"].gt(0).sum())},
-        "validation": windows[-1],
+        "validation": {
+            "start": str(cutoff.date()),
+            "end": str(validation["Date"].max().date()),
+            "no_history": scores["no_history"]["rmspe"],
+            "with_history": scores["with_history"]["rmspe"],
+        },
         "experiments": scores,
         "relative_improvement": improvement,
         "min_relative_improvement": config["min_relative_improvement"],
         "meets_threshold": improvement is not None and improvement >= config["min_relative_improvement"],
-        "bootstrap_95_ci": bootstrap_by_store(
-            validation, predictions["no_history"], predictions["with_history"],
-            config["bootstrap_samples"], config["seed"],
-        ),
-        "backtest": windows,
-        "backtest_summary": window_summary,
+        "bootstrap_95_ci": improvement_interval,
         "research_checks": checks,
         "spiky_stores": len(spiky_stores),
         "spike_sensitivity": spike_sensitivity,
