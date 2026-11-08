@@ -1,6 +1,6 @@
 import numpy as np
 from sklearn.compose import ColumnTransformer, TransformedTargetRegressor
-from sklearn.linear_model import LinearRegression
+from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 from threadpoolctl import threadpool_limits
@@ -18,7 +18,7 @@ EXPERIMENTS = {
 }
 
 
-def fit_model(train, history_columns):
+def fit_model(train, history_columns, alpha=0.0):
     prepare = ColumnTransformer(
         [
             ("categories", OneHotEncoder(handle_unknown="ignore"), CATEGORICAL),
@@ -26,8 +26,9 @@ def fit_model(train, history_columns):
         ],
         sparse_threshold=1.0,
     )
+    regression = Ridge(alpha=alpha, solver="lsqr") if alpha else LinearRegression()
     model = TransformedTargetRegressor(
-        regressor=make_pipeline(prepare, LinearRegression()),
+        regressor=make_pipeline(prepare, regression),
         func=np.log1p,
         inverse_func=np.expm1,
     )

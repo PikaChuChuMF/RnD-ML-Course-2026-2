@@ -20,6 +20,9 @@ def relative_improvement(reference, candidate):
 
 
 def summarize_data(sales):
+    gap_start, gap_end = "2014-07-01", "2014-12-31"
+    observed = sales.loc[sales["Date"].between(gap_start, gap_end), "Store"].unique()
+    missing_stores = sales["Store"].nunique() - len(observed)
     return {
         "rows": len(sales),
         "stores": int(sales["Store"].nunique()),
@@ -31,17 +34,24 @@ def summarize_data(sales):
         "closed_days": int(sales["Open"].eq(0).sum()),
         "open_zero_sales": int((sales["Open"].eq(1) & sales["Sales"].eq(0)).sum()),
         "promo_days": int(sales["Promo"].eq(1).sum()),
+        "observation_gap": {
+            "start": gap_start,
+            "end": gap_end,
+            "days": len(pd.date_range(gap_start, gap_end)),
+            "stores": int(missing_stores),
+        },
         "positive_sales_quantiles": sales.loc[sales["Sales"] > 0, "Sales"]
         .quantile([0, 0.01, 0.5, 0.99, 1]).to_dict(),
     }
 
 
-def stores_with_spikes(past):
+def historical_spikes(past):
     positive = past.loc[past["Sales"] > 0].copy()
     weekday_median = positive.groupby(["Store", "DayOfWeek"])["Sales"].transform("median")
     positive["spike"] = positive["Sales"] >= 3 * weekday_median
     spike_rate = positive.groupby("Store")["spike"].mean()
-    return spike_rate.index[(spike_rate > 0) & (spike_rate <= 0.01)]
+    stores = spike_rate.index[(spike_rate > 0) & (spike_rate <= 0.01)]
+    return positive.loc[positive["spike"] & positive["Store"].isin(stores)]
 
 
 def bootstrap_by_store(rows, reference, candidate, samples, seed):
