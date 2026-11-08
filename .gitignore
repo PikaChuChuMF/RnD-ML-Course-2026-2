@@ -1,0 +1,20 @@
+# Local Kaggle data and generated experiment artifacts
+/data/
+/artifacts/
+/rossmann-store-sales.zip
+
+# Python environments and caches
+/.venv/
+/venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.ipynb_checkpoints/
+
+# Local environment and credentials
+/.env
+/.env.*
+!/.env.example
+kaggle.json
