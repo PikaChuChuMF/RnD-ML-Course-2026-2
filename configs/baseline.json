@@ -1,6 +1,5 @@
 {
   "data_path": "data/train.csv",
-  "test_path": "data/test.csv",
   "output_dir": "artifacts/baseline",
   "window_days": 42,
   "recent_days": 28,

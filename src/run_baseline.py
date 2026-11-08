@@ -3,9 +3,8 @@ import json
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 
-from src.data import HISTORY_WEEKS, add_history, load_sales, prepare_windows
+from src.data import add_history, load_sales, prepare_windows
 from src.evaluate import (
     bootstrap_by_store,
     compare_rmspe_by_store,
@@ -86,46 +85,6 @@ def run(config):
         config["bootstrap_samples"], config["seed"],
     )
 
-    test = pd.read_csv(config["test_path"], parse_dates=["Date"])
-    test_start = test["Date"].min()
-    if test_start <= sales["Date"].max():
-        raise ValueError("Official test dates must follow all labeled sales dates.")
-
-    missing_open = test["Open"].isna()
-    missing_by_store = test.loc[missing_open, "Store"].value_counts().to_dict()
-    recent = sales.loc[sales["Date"].ge(test_start - pd.Timedelta(weeks=HISTORY_WEEKS))]
-    open_rate = recent.groupby(["Store", "DayOfWeek"])["Open"].mean()
-    missing_keys = pd.MultiIndex.from_frame(test.loc[missing_open, ["Store", "DayOfWeek"]])
-    test.loc[missing_open, "Open"] = open_rate.reindex(missing_keys).fillna(1).ge(0.5).to_numpy(dtype=int)
-    test["Month"] = test["Date"].dt.month
-    test_features = add_history(test, sales, test_start, config["recent_days"], config["year_lag_days"])
-    final_train = pd.concat([train, validation], ignore_index=True)
-    test_predictions = {}
-    for name in ("no_history", "with_history"):
-        print(f"Fitting {name} for the official test", flush=True)
-        model = fit_model(final_train, EXPERIMENTS[name])
-        test_predictions[name] = predict(model, test_features)
-
-    test_stores = validation["Store"].isin(test["Store"]).to_numpy()
-    test_scope = {
-        "first_date": str(test["Date"].min().date()),
-        "last_date": str(test["Date"].max().date()),
-        "days": int(test["Date"].nunique()),
-        "stores": int(test["Store"].nunique()),
-        "missing_open": missing_by_store,
-        "forecast_summary": {
-            name: {
-                "rows": len(prediction),
-                "mean": float(prediction.mean()),
-                "total": float(prediction.sum()),
-            }
-            for name, prediction in test_predictions.items()
-        },
-        "local_subset": {
-            name: metrics(validation.loc[test_stores], predictions[name][test_stores])
-            for name in ("no_history", "with_history")
-        },
-    }
     report = {
         "data": summarize_data(sales),
         "train": {"first_date": str(origins[0].date()), "rows": int(train["Sales"].gt(0).sum())},
@@ -144,7 +103,6 @@ def run(config):
         "spiky_stores": len(spiky_stores),
         "spike_sensitivity": spike_sensitivity,
         "comparison_uncertainty": comparison_uncertainty,
-        "official_test": test_scope,
     }
 
     output = Path(config["output_dir"])
@@ -153,9 +111,6 @@ def run(config):
     validation[columns].assign(
         **predictions, spiky_store=spiky, history_without_spikes=without_spikes,
     ).to_csv(output / "predictions.csv", index=False)
-    test[["Id", "Store", "Date", "Open"]].assign(
-        open_imputed=missing_open, **test_predictions,
-    ).to_csv(output / "test_predictions.csv", index=False)
     (output / "metrics.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"Reports saved to {output}", flush=True)
 
