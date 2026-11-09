@@ -17,8 +17,8 @@ from src.evaluate import (
 from src.train import EXPERIMENTS, fit_model, predict
 
 
-def compare_history_over_time(train, origins, cutoff, window_days, main_result):
-    window = pd.Timedelta(days=window_days)
+def compare_history_over_time(sales, train, origins, cutoff, config, main_result):
+    window = pd.Timedelta(days=config["window_days"])
     periods = []
     for offset in (4, 2):
         start = cutoff - offset * window
@@ -29,13 +29,17 @@ def compare_history_over_time(train, origins, cutoff, window_days, main_result):
         if not earlier["Sales"].gt(0).any() or not target["Sales"].gt(0).any():
             continue
 
-        result = {"start": str(start.date()), "end": str((start + window - pd.Timedelta(days=1)).date())}
-        for name in ("no_history", "with_history"):
-            print(f"Fitting {name} for earlier window {start.date()}", flush=True)
-            model = fit_model(earlier, EXPERIMENTS[name])
-            result[name] = metrics(target, predict(model, target))["rmspe"]
-        result["relative_improvement"] = relative_improvement(result["no_history"], result["with_history"])
-        periods.append(result)
+        _, scores, research = evaluate_window(sales, earlier, target, start, config)
+        no_history = scores["no_history"]["rmspe"]
+        with_history = scores["with_history"]["rmspe"]
+        periods.append({
+            "start": str(start.date()),
+            "end": str((start + window - pd.Timedelta(days=1)).date()),
+            "no_history": no_history,
+            "with_history": with_history,
+            "relative_improvement": relative_improvement(no_history, with_history),
+            "comparison_uncertainty": research["comparison_uncertainty"],
+        })
 
     periods.append(main_result)
     summary = {}
@@ -48,11 +52,7 @@ def compare_history_over_time(train, origins, cutoff, window_days, main_result):
     return {"periods": periods, "summary": summary}
 
 
-def run(config):
-    sales = load_sales(Path(config["data_path"]))
-    print(f"Loaded {len(sales):,} rows", flush=True)
-    train, validation, cutoff, origins = prepare_windows(sales, config)
-
+def evaluate_window(sales, train, validation, cutoff, config):
     models, predictions, scores = {}, {}, {}
     for name, columns in EXPERIMENTS.items():
         print(f"Fitting {name} for {cutoff.date()}", flush=True)
@@ -111,6 +111,22 @@ def run(config):
         validation, {**predictions, "history_without_spikes": without_spikes}, comparison_pairs,
         config["bootstrap_samples"], config["seed"],
     )
+    predictions["spiky_store"] = spiky
+    predictions["history_without_spikes"] = without_spikes
+    research = {
+        "research_checks": checks,
+        "spiky_stores": len(spiky_stores),
+        "spike_sensitivity": spike_sensitivity,
+        "comparison_uncertainty": comparison_uncertainty,
+    }
+    return predictions, scores, research
+
+
+def run(config):
+    sales = load_sales(Path(config["data_path"]))
+    print(f"Loaded {len(sales):,} rows", flush=True)
+    train, validation, cutoff, origins = prepare_windows(sales, config)
+    predictions, scores, research = evaluate_window(sales, train, validation, cutoff, config)
     improvement = relative_improvement(scores["no_history"]["rmspe"], scores["with_history"]["rmspe"])
     improvement_interval = bootstrap_by_store(
         validation, predictions["no_history"], predictions["with_history"],
@@ -124,7 +140,12 @@ def run(config):
         "with_history": scores["with_history"]["rmspe"],
     }
     history_over_time = compare_history_over_time(
-        train, origins, cutoff, config["window_days"], {**validation_result, "relative_improvement": improvement},
+        sales, train, origins, cutoff, config,
+        {
+            **validation_result,
+            "relative_improvement": improvement,
+            "comparison_uncertainty": research["comparison_uncertainty"],
+        },
     )
     report = {
         "data": summarize_data(sales),
@@ -136,18 +157,13 @@ def run(config):
         "min_relative_improvement": config["min_relative_improvement"],
         "meets_threshold": improvement is not None and improvement >= config["min_relative_improvement"],
         "bootstrap_95_ci": improvement_interval,
-        "research_checks": checks,
-        "spiky_stores": len(spiky_stores),
-        "spike_sensitivity": spike_sensitivity,
-        "comparison_uncertainty": comparison_uncertainty,
+        **research,
     }
 
     output = Path(config["output_dir"])
     output.mkdir(parents=True, exist_ok=True)
     columns = ["Store", "Date", "DayOfWeek", "Open", "Promo", "StateHoliday", "Sales", "last_year_available"]
-    validation[columns].assign(
-        **predictions, spiky_store=spiky, history_without_spikes=without_spikes,
-    ).to_csv(output / "predictions.csv", index=False)
+    validation[columns].assign(**predictions).to_csv(output / "predictions.csv", index=False)
     (output / "metrics.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     print(f"Reports saved to {output}", flush=True)
 
