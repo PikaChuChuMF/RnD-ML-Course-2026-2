@@ -1,0 +1,10 @@
+{
+  "data_path": "data/train.csv",
+  "output_dir": "artifacts/baseline",
+  "window_days": 42,
+  "recent_days": 28,
+  "year_lag_days": 364,
+  "min_relative_improvement": 0.05,
+  "bootstrap_samples": 1000,
+  "seed": 42
+}
