@@ -1,0 +1,17 @@
+data:
+  train: data/train.csv
+  test: data/test.csv
+
+cv:
+  n_splits: 5
+  seed: 42
+
+evaluate:
+  out: results
+  models: [constant, random, keyword, tfidf]
+
+  compare: [keyword, tfidf]
+
+train:
+  out: artifacts/baseline
+  models: [tfidf]
