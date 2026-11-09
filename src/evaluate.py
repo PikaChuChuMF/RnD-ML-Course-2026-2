@@ -86,7 +86,8 @@ def compare_rmspe_by_store(rows, predictions, comparisons, samples, seed):
     results = {}
     for name, mask, reference, candidate in comparisons:
         subset = rows.loc[mask]
-        stores = subset.loc[subset["Sales"] > 0, "Store"].nunique()
+        scored = subset["Sales"].gt(0)
+        stores = subset.loc[scored, "Store"].nunique()
         if stores < 2:
             continue
         before = predictions[reference][mask]
@@ -96,6 +97,7 @@ def compare_rmspe_by_store(rows, predictions, comparisons, samples, seed):
         low, high = np.quantile(differences, [tail, 1 - tail])
         results[name] = {
             "stores": int(stores),
+            "rows": int(scored.sum()),
             "delta_rmspe": metrics(subset, after)["rmspe"] - metrics(subset, before)["rmspe"],
             "interval": [float(low), float(high)],
             "excludes_zero": bool(high < 0 or low > 0),
