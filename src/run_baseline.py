@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+import pandas as pd
 
 from src.data import add_history, load_sales, prepare_windows
 from src.evaluate import (
@@ -14,6 +15,37 @@ from src.evaluate import (
     summarize_data,
 )
 from src.train import EXPERIMENTS, fit_model, predict
+
+
+def compare_history_over_time(train, origins, cutoff, window_days, main_result):
+    window = pd.Timedelta(days=window_days)
+    periods = []
+    for offset in (4, 2):
+        start = cutoff - offset * window
+        if start not in origins:
+            continue
+        earlier = train.loc[train["Date"] < start]
+        target = train.loc[train["Date"].between(start, start + window, inclusive="left")]
+        if not earlier["Sales"].gt(0).any() or not target["Sales"].gt(0).any():
+            continue
+
+        result = {"start": str(start.date()), "end": str((start + window - pd.Timedelta(days=1)).date())}
+        for name in ("no_history", "with_history"):
+            print(f"Fitting {name} for earlier window {start.date()}", flush=True)
+            model = fit_model(earlier, EXPERIMENTS[name])
+            result[name] = metrics(target, predict(model, target))["rmspe"]
+        result["relative_improvement"] = relative_improvement(result["no_history"], result["with_history"])
+        periods.append(result)
+
+    periods.append(main_result)
+    summary = {}
+    for name in ("no_history", "with_history", "relative_improvement"):
+        values = [period[name] for period in periods if period[name] is not None]
+        summary[name] = {
+            "mean": float(np.mean(values)) if values else None,
+            "std": float(np.std(values, ddof=1)) if len(values) > 1 else None,
+        }
+    return {"periods": periods, "summary": summary}
 
 
 def run(config):
@@ -85,15 +117,20 @@ def run(config):
         config["bootstrap_samples"], config["seed"],
     )
 
+    validation_result = {
+        "start": str(cutoff.date()),
+        "end": str(validation["Date"].max().date()),
+        "no_history": scores["no_history"]["rmspe"],
+        "with_history": scores["with_history"]["rmspe"],
+    }
+    history_over_time = compare_history_over_time(
+        train, origins, cutoff, config["window_days"], {**validation_result, "relative_improvement": improvement},
+    )
     report = {
         "data": summarize_data(sales),
         "train": {"first_date": str(origins[0].date()), "rows": int(train["Sales"].gt(0).sum())},
-        "validation": {
-            "start": str(cutoff.date()),
-            "end": str(validation["Date"].max().date()),
-            "no_history": scores["no_history"]["rmspe"],
-            "with_history": scores["with_history"]["rmspe"],
-        },
+        "validation": validation_result,
+        "history_over_time": history_over_time,
         "experiments": scores,
         "relative_improvement": improvement,
         "min_relative_improvement": config["min_relative_improvement"],
